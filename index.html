@@ -768,14 +768,16 @@ function warmUpMic(){
 // IMPORTANT: on file:// pages, Chrome does NOT reliably remember "Allow
 // while visiting the site" the way it does for https:// pages — it can
 // re-prompt on every single getUserMedia() call within the same session.
-// Requesting + immediately stopping the stream (as this used to do) meant a
-// brand new request — and a brand new prompt — before every single Repeat/
-// Sentence Build question. The fix: request the mic stream ONCE per session
-// and keep it open (don't stop its tracks) so every later call just reuses
-// the same already-granted stream with zero extra prompts. Trade-off: once
-// the mic is opened this way, a Bluetooth headset stays in its lower-quality
-// call profile for the rest of the session — acceptable since it avoids a
-// permission dialog after every single sentence.
+// On file:// this used to re-prompt for mic access on every single question,
+// so the app kept one shared getUserMedia() stream open for the whole
+// session — but that meant a Bluetooth headset stayed in its low-quality
+// call profile the entire time. Now that the app is served over a real
+// https:// origin (GitHub Pages), Chrome reliably remembers "Allow" per
+// origin across separate getUserMedia() calls, so we no longer need to hold
+// the stream open to avoid re-prompts. Instead: acquire the mic only when
+// actually needed, then release it (see releaseSharedMic()) right after each
+// use finishes — the headset drops back to full-quality music mode between
+// questions, and the next mic request still won't show a permission dialog.
 let sharedMicStream = null;
 function ensureMicPermission(onGranted, onDenied){
   if(sharedMicStream && sharedMicStream.active){ onGranted(); return; }
@@ -783,6 +785,17 @@ function ensureMicPermission(onGranted, onDenied){
   navigator.mediaDevices.getUserMedia({ audio:true })
     .then(stream => { sharedMicStream = stream; onGranted(); })
     .catch(()=> onDenied());
+}
+
+// Free the mic right after each use so a Bluetooth headset can drop back to
+// its full-quality music profile between questions. Safe to call even if
+// nothing is open. The next getUserMedia() call will re-acquire it — on the
+// https:// origin this happens silently, no permission dialog.
+function releaseSharedMic(){
+  if(sharedMicStream){
+    sharedMicStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} });
+    sharedMicStream = null;
+  }
 }
 
 // Speak one sentence, with an automatic one-time retry using the browser's
@@ -811,6 +824,7 @@ function speak(text, onStatus, onEnd){
     }
     if(tryNum===0) firstChoice = chosen;
     u.rate = 0.95;
+    u.volume = 1; // explicit max — SpeechSynthesis has no way to boost past this
     let started = false;
     u.onstart = ()=>{ started = true; if(onStatus) onStatus('ok'); };
     u.onend = finish;
@@ -854,6 +868,7 @@ function speakSequential(lines, onDone, onStatus){
     if(!useDefaultVoice && voicePool.length){ const v = voicePool[Math.floor(Math.random()*voicePool.length)]; u.voice=v; u.lang=v.lang; }
     else u.lang='en-US';
     u.rate = 0.95;
+    u.volume = 1; // explicit max — SpeechSynthesis has no way to boost past this
     let started = false, done = false;
     const finishLine = ()=>{ if(done) return; done = true; onLineDone(); };
     u.onstart = ()=>{ started = true; anyStarted = true; if(onStatus) onStatus('ok'); };
@@ -970,10 +985,19 @@ function renderDots(){
 
 function clearTimers(){
   clearTimeout(state.timer); state.timer=null;
+  clearInterval(state.ringTimer); state.ringTimer=null;
   if(state.recognition){ try{state.recognition.stop();}catch(e){} }
 }
 
+// Starts (or restarts) the per-question countdown ring. Safe to call again
+// on the same question — e.g. once when the question first appears, then
+// again once the user presses Play/Confirm to give a fresh window for their
+// actual response — because it always clears any timer/interval left over
+// from a previous call first, so an old call never sneaks in and fires
+// onExpire late/twice.
 function startRing(seconds, onExpire){
+  clearTimeout(state.timer); state.timer=null;
+  clearInterval(state.ringTimer); state.ringTimer=null;
   const ring = document.getElementById('ringFg');
   const timeEl = document.getElementById('ringTime');
   const CIRC = 327;
@@ -985,13 +1009,13 @@ function startRing(seconds, onExpire){
   ring.style.transition = `stroke-dashoffset ${seconds}s linear`;
   ring.style.strokeDashoffset = CIRC;
   let remaining = seconds;
-  const tick = setInterval(()=>{
+  state.ringTimer = setInterval(()=>{
     remaining -= 1;
     timeEl.textContent = Math.max(remaining,0);
     if(remaining<=2) ring.classList.add('danger');
-    if(remaining<=0){ clearInterval(tick); }
+    if(remaining<=0){ clearInterval(state.ringTimer); state.ringTimer=null; }
   },1000);
-  state.timer = setTimeout(()=>{ clearInterval(tick); onExpire(); }, seconds*1000);
+  state.timer = setTimeout(()=>{ clearInterval(state.ringTimer); state.ringTimer=null; onExpire(); }, seconds*1000);
 }
 
 function switchMode(mode){
@@ -1051,7 +1075,14 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous sentence's hint until this one is actually played
+    // Countdown starts the moment the question appears — if the user never
+    // taps Play in time, auto-skip to the next question (counts as missed).
+    startRing(info.time, ()=>{
+      document.getElementById('playBtn').disabled = true;
+      finishSpeaking(text, info, null, undefined, true);
+    });
     document.getElementById('playBtn').onclick = ()=>{
+      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the sentence finishes playing
       document.getElementById('playBtn').disabled = true;
       const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
       document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
@@ -1080,6 +1111,12 @@ function renderQuestion(){
       <div class="feedback" id="fb"></div>`;
     state.lastPlayedItem = { en:item.answer, vi:item.vi };
     updateHintPanel();
+    // Countdown starts the moment the question appears — if the user never
+    // finishes arranging + confirming in time, auto-skip (counts as missed).
+    startRing(info.time, ()=>{
+      document.getElementById('confirmOrder').disabled = true;
+      finishSpeaking(item.answer, info, null, undefined, true);
+    });
 
     function renderRows(){
       document.getElementById('answerRow').innerHTML = picked.map(c=>`<div class="chunk">${c}</div>`).join('') || '<span class="hidden-hint">no chunks selected yet</span>';
@@ -1093,6 +1130,7 @@ function renderQuestion(){
     renderRows();
     document.getElementById('resetChunks').onclick = ()=>{ picked=[]; renderRows(); document.getElementById('confirmOrder').disabled=true; };
     document.getElementById('confirmOrder').onclick = ()=>{
+      clearTimers(); // stop the "waiting to confirm" countdown; a fresh one starts once speaking capture begins
       const correctOrder = picked.join(' ') === item.chunks.join(' ');
       document.getElementById('confirmOrder').disabled = true;
       const fb = document.getElementById('fb');
@@ -1120,7 +1158,14 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous item's hint until this one is actually played
+    // Countdown starts the moment the question appears — if the user never
+    // taps Play in time, auto-skip to the next question (counts as missed).
+    startRing(info.time, ()=>{
+      document.getElementById('playBtn').disabled = true;
+      finishSpeaking(item.answers[0], info, null, undefined, true, item.answers);
+    });
     document.getElementById('playBtn').onclick = ()=>{
+      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the conversation finishes playing
       document.getElementById('playBtn').disabled = true;
       document.getElementById('voiceTag').textContent = '🔊 Playing conversation...';
       let convOk = true;
@@ -1183,7 +1228,14 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous sentence's hint until this one is actually played
+    // Countdown starts the moment the question appears — if the user never
+    // taps Play in time, auto-skip to the next question (counts as missed).
+    startRing(info.time, ()=>{
+      document.getElementById('playBtn').disabled = true;
+      submitDictation(item, info, true);
+    });
     document.getElementById('playBtn').onclick = ()=>{
+      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the sentence finishes playing
       document.getElementById('playBtn').disabled = true;
       const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
         document.getElementById('typeArea').style.display='flex';
@@ -1272,6 +1324,7 @@ function beginSpeakingCapture(targetText, info, buildCorrect, acceptList){
           finishSpeaking(targetText, info, said, buildCorrect, false, acceptList);
         };
         rec.onerror = ()=> showSelfReport(targetText, info, buildCorrect, acceptList);
+        rec.onend = ()=> releaseSharedMic();
         rec.start();
       }catch(e){ showSelfReport(targetText, info, buildCorrect, acceptList); }
     }, ()=> showSelfReport(targetText, info, buildCorrect, acceptList));
@@ -1293,6 +1346,7 @@ function showSelfReport(targetText, info, buildCorrect, acceptList){
 
 function finishSpeaking(targetText, info, said, buildCorrect, timedOut, acceptList){
   clearTimers();
+  releaseSharedMic();
   let acc = 0;
   if(said!==null){
     if(acceptList && acceptList.length){
@@ -1518,7 +1572,7 @@ document.getElementById('testMicBtn').addEventListener('click', ()=>{
           msg.textContent = `⚠️ Microphone error (${reason || 'unknown'}) — try again, or check Windows Sound settings for your headset mic.`;
         }
       };
-      rec.onend = finish;
+      rec.onend = ()=>{ finish(); releaseSharedMic(); };
       rec.start();
     }catch(e){
       msg.textContent = '❌ Could not start the microphone — try again, or check Windows Sound settings for your headset mic.';
@@ -1562,10 +1616,8 @@ document.getElementById('micLevelBtn').addEventListener('click', ()=>{
       if(Date.now()-start < 5000){
         requestAnimationFrame(tick);
       } else {
-        // Don't stop the shared stream's tracks here — it stays open and
-        // reused for the rest of the session (see ensureMicPermission) so
-        // later mic uses don't trigger a fresh permission prompt.
         ctx.close();
+        releaseSharedMic();
         fill.style.width = '0%';
         const peakPct = Math.round(Math.min(100, maxLevel*400));
         if(maxLevel < 0.02){
