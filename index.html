@@ -84,6 +84,23 @@
   .mic-level-track{width:80px;height:10px;border-radius:5px;background:#EEF1F8;border:1px solid var(--line);overflow:hidden;flex:none;}
   .mic-level-fill{height:100%;width:0%;background:var(--writing);transition:width .06s linear;}
 
+  .check-confirm{display:flex;gap:6px;margin-left:auto;}
+  .btn.tiny{padding:5px 10px;font-size:11px;border-radius:7px;font-weight:700;}
+  .btn.tiny.ok{background:#fff;color:var(--writing);border:1px solid var(--writing);}
+  .btn.tiny.ok:hover,.btn.tiny.ok.selected{background:var(--writing);color:#fff;}
+  .btn.tiny.bad{background:#fff;color:var(--bad);border:1px solid var(--bad);}
+  .btn.tiny.bad:hover,.btn.tiny.bad.selected{background:var(--bad);color:#fff;}
+
+  .session-control{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-align:center;}
+  .session-btn{width:100%;font-size:15px;padding:13px;background:linear-gradient(135deg,var(--primary),var(--writing));}
+  .session-btn.paused{background:linear-gradient(135deg,var(--gold),var(--speaking));}
+  .session-btn:disabled{background:#C7CCDA;opacity:1;cursor:not-allowed;}
+  .session-hint{margin-top:6px;}
+
+  .pause-overlay{position:absolute;inset:0;background:rgba(243,245,251,.95);border-radius:18px;display:flex;align-items:center;justify-content:center;z-index:20;cursor:pointer;text-align:center;padding:20px;}
+  .pause-overlay-inner{font-weight:800;font-size:17px;color:var(--primary);line-height:1.5;}
+  .pause-overlay-inner span{display:block;font-weight:600;font-size:12.5px;color:var(--muted);margin-top:6px;}
+
   .exam-row{margin-bottom:12px;}
   .exam-tab{width:100%;background:linear-gradient(135deg,var(--primary),var(--gold));color:#fff;border:none;font-size:13px;padding:13px 10px;box-shadow:0 6px 18px rgba(47,95,224,.28);letter-spacing:.02em;}
   .exam-tab:hover{filter:brightness(1.06);color:#fff;}
@@ -101,7 +118,7 @@
   .dot.done{background:var(--primary);}
   .dot.current{background:var(--text);}
 
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 22px;text-align:center;min-height:340px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:16px;box-shadow:0 1px 2px rgba(20,30,60,.04), 0 10px 28px rgba(20,30,60,.05);}
+  .card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:26px 22px;text-align:center;min-height:340px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:16px;box-shadow:0 1px 2px rgba(20,30,60,.04), 0 10px 28px rgba(20,30,60,.05);}
 
   .ring-wrap{position:relative;width:104px;height:104px;}
   .ring{width:104px;height:104px;transform:rotate(-90deg);}
@@ -195,17 +212,33 @@
     <div class="sound-check">
       <button class="btn secondary" id="testSoundBtn">🔊 Test Sound</button>
       <span class="voice-tag" id="soundCheckMsg">Tap this once to check that audio works on this device/browser.</span>
+      <div class="check-confirm" id="soundConfirm" style="display:none">
+        <button class="btn tiny ok" id="soundOk">✓ Đạt</button>
+        <button class="btn tiny bad" id="soundBad">✗ Chưa đạt</button>
+      </div>
     </div>
     <div class="sound-check">
       <button class="btn secondary" id="testMicBtn">🎙 Test Microphone</button>
       <span class="voice-tag" id="micCheckMsg">Tap this once to check that your headset mic is picked up correctly.</span>
+      <div class="check-confirm" id="micConfirm" style="display:none">
+        <button class="btn tiny ok" id="micOk">✓ Đạt</button>
+        <button class="btn tiny bad" id="micBad">✗ Chưa đạt</button>
+      </div>
     </div>
     <div class="sound-check">
       <button class="btn secondary" id="micLevelBtn">🎚 Mic Level Test (5s)</button>
       <div class="mic-level-track" id="micLevelTrack"><div class="mic-level-fill" id="micLevelFill"></div></div>
       <span class="voice-tag" id="micLevelMsg">Raw signal test — shows if the browser receives ANY audio from your mic, even if speech isn't recognized.</span>
+      <div class="check-confirm" id="levelConfirm" style="display:none">
+        <button class="btn tiny ok" id="levelOk">✓ Đạt</button>
+        <button class="btn tiny bad" id="levelBad">✗ Chưa đạt</button>
+      </div>
     </div>
-    <div class="voice-tag" id="voiceDebug" style="padding:0 2px;"></div>
+    <div class="voice-tag" id="voiceDebug" style="padding:0 2px;font-size:10px;opacity:.65;"></div>
+    <div class="session-control">
+      <button class="btn session-btn" id="sessionToggleBtn" disabled>▶ Start Session</button>
+      <div class="voice-tag session-hint" id="sessionHint">Hoàn thành ✓ Đạt cho cả 3 bước kiểm tra âm thanh ở trên để bắt đầu.</div>
+    </div>
   </header>
 
   <nav class="mode-tabs" id="modeTabs">
@@ -666,7 +699,15 @@ const scores = {
   writing:{correct:0,total:0},
 };
 
-let state = { mode:'repeat', order:[], idx:0, timer:null, ringTimer:null, recognizing:false, hintOpen:false, lastPlayedItem:null, examActive:false, examSeqIdx:0 };
+let state = {
+  mode:'repeat', order:[], idx:0, timer:null, ringTimer:null, recognizing:false, hintOpen:false,
+  lastPlayedItem:null, examActive:false, examSeqIdx:0,
+  // Session run/pause control (gated behind the 3 audio checks below).
+  running:false, paused:false, activateFn:null,
+  ringRemaining:0, ringOnExpire:null,
+  wasListening:false, listeningArgs:null,
+  checklist:{ sound:null, mic:null, level:null } // null=not confirmed, true=Đạt, false=Chưa đạt
+};
 let examStartSnapshot = null;
 
 function shuffledIndices(mode, countOverride){
@@ -1007,16 +1048,19 @@ function startRing(seconds, onExpire){
   ring.style.transition='none';
   ring.style.strokeDashoffset='0';
   ring.classList.remove('danger');
-  ring.classList.remove('indefinite');
-  timeEl.classList.remove('indefinite');
   timeEl.textContent = seconds;
   const CIRC = 327;
   void ring.offsetWidth;
   ring.style.transition = `stroke-dashoffset ${seconds}s linear`;
   ring.style.strokeDashoffset = CIRC;
   let remaining = seconds;
+  // Remembered so Pause/Resume can freeze and later restart this exact
+  // countdown (same remaining time, same onExpire) instead of resetting it.
+  state.ringRemaining = remaining;
+  state.ringOnExpire = onExpire;
   state.ringTimer = setInterval(()=>{
     remaining -= 1;
+    state.ringRemaining = remaining;
     timeEl.textContent = Math.max(remaining,0);
     if(remaining<=2) ring.classList.add('danger');
     if(remaining<=0){ clearInterval(state.ringTimer); state.ringTimer=null; }
@@ -1027,9 +1071,110 @@ function startRing(seconds, onExpire){
   // which would otherwise look like the app "getting stuck" at 0.
   state.timer = setTimeout(()=>{
     clearInterval(state.ringTimer); state.ringTimer=null;
+    state.ringOnExpire = null;
     try{ onExpire(); }
     catch(err){ console.error('[V4SE] startRing onExpire failed:', err); nextQuestion(); }
   }, seconds*1000);
+}
+
+// Freezes the countdown + playback + mic exactly where they are, without
+// losing progress. Resume continues from here rather than restarting.
+function pauseRing(){
+  clearTimeout(state.timer); state.timer=null;
+  clearInterval(state.ringTimer); state.ringTimer=null;
+  const ring = document.getElementById('ringFg');
+  if(ring){
+    try{
+      const frozenOffset = getComputedStyle(ring).strokeDashoffset;
+      ring.style.transition = 'none';
+      ring.style.strokeDashoffset = frozenOffset;
+    }catch(e){}
+  }
+  if('speechSynthesis' in window){ try{ window.speechSynthesis.pause(); }catch(e){} }
+  if(state.recognition){
+    state.wasListening = true;
+    try{ state.recognition.stop(); }catch(e){}
+  }
+}
+
+// Continues a paused question: resumes speech synthesis, restarts the
+// countdown with whatever time was left (state.ringRemaining/ringOnExpire,
+// set by startRing and left untouched by pauseRing), and — since the Web
+// Speech API has no real pause/resume — restarts mic listening from
+// scratch if it was actively listening when paused. If there's nothing to
+// resume (fresh question, never started), falls back to activateFn().
+function resumeRing(){
+  if('speechSynthesis' in window){ try{ window.speechSynthesis.resume(); }catch(e){} }
+  if(state.ringOnExpire && state.ringRemaining > 0){
+    startRing(state.ringRemaining, state.ringOnExpire);
+    if(state.wasListening && state.listeningArgs){
+      state.wasListening = false;
+      beginSpeakingCapture(state.listeningArgs.targetText, state.listeningArgs.info, state.listeningArgs.buildCorrect, state.listeningArgs.acceptList);
+    }
+  } else if(state.activateFn){
+    state.activateFn();
+  }
+}
+
+// ================== Session Start/Pause + audio-check gate ==================
+function allChecksPassed(){
+  return state.checklist.sound === true && state.checklist.mic === true && state.checklist.level === true;
+}
+
+function syncSessionControls(){
+  const btn = document.getElementById('sessionToggleBtn');
+  const hint = document.getElementById('sessionHint');
+  if(!btn) return;
+  const ok = allChecksPassed();
+  // Audio checks always take priority: the Start button stays locked (and,
+  // if the checks somehow become un-passed again, this also re-locks it)
+  // regardless of what state the session itself is in.
+  if(!ok) btn.disabled = true;
+  else if(!state.running) btn.disabled = false;
+  if(hint){
+    hint.textContent = ok
+      ? 'Sẵn sàng — bấm để bắt đầu / tạm dừng phiên luyện.'
+      : 'Hoàn thành ✓ Đạt cho cả 3 bước kiểm tra âm thanh ở trên để bắt đầu.';
+  }
+  updateSessionButtonLabel();
+}
+
+function updateSessionButtonLabel(){
+  const btn = document.getElementById('sessionToggleBtn');
+  if(!btn) return;
+  if(!state.running){
+    btn.textContent = '▶ Start Session';
+    btn.classList.remove('paused');
+  } else if(state.paused){
+    btn.textContent = '▶ Resume';
+    btn.classList.add('paused');
+  } else {
+    btn.textContent = '⏸ Pause';
+    btn.classList.remove('paused');
+  }
+}
+
+function syncPauseOverlay(){
+  const overlay = document.getElementById('pauseOverlay');
+  if(!overlay) return;
+  overlay.style.display = (state.running && !state.paused) ? 'none' : 'flex';
+}
+
+function toggleSession(){
+  if(!state.running){
+    if(!allChecksPassed()) return; // guarded again here — audio checks win over the button
+    state.running = true;
+    state.paused = false;
+    if(state.activateFn) state.activateFn();
+  } else if(state.paused){
+    state.paused = false;
+    resumeRing();
+  } else {
+    state.paused = true;
+    pauseRing();
+  }
+  updateSessionButtonLabel();
+  syncPauseOverlay();
 }
 
 
@@ -1074,6 +1219,16 @@ function renderQuestion(){
   const card = document.getElementById('card');
   const ringHtml = ringHtmlFor(info);
 
+  // Fresh question — nothing to resume yet, and no capture recorded yet.
+  // state.activateFn gets set by whichever mode block below runs; it's what
+  // Start/Resume calls to actually kick this question off.
+  state.activateFn = null;
+  state.ringOnExpire = null;
+  state.ringRemaining = 0;
+  state.captured = null;
+  state.wasListening = false;
+  state.listeningArgs = null;
+
   if(state.mode==='repeat'){
     const text = item.en;
     card.innerHTML = `
@@ -1088,14 +1243,17 @@ function renderQuestion(){
       <div class="feedback" id="fb">🔊 Playing...</div>`;
     state.lastPlayedItem = { en:text, vi:item.vi };
     updateHintPanel();
-    state.captured = null;
-    // ONE countdown for the entire question, started the instant it appears.
-    // Nothing the user does clears or restarts it — audio playback and
-    // speech capture both happen inside this same window, and whatever was
-    // heard (or wasn't) by the time it hits 0 is what gets scored.
-    startRing(info.time, ()=> finalizeSpeakingOnExpiry(text, info));
-    const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
-    document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
+    // ONE countdown for the entire question, started the instant Start is
+    // pressed (or immediately if the session is already running). Nothing
+    // the user does clears or restarts it — audio playback and speech
+    // capture both happen inside this same window, and whatever was heard
+    // (or wasn't) by the time it hits 0 is what gets scored.
+    state.activateFn = ()=>{
+      startRing(info.time, ()=> finalizeSpeakingOnExpiry(text, info));
+      const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
+      const vt = document.getElementById('voiceTag');
+      if(vt) vt.textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
+    };
   }
 
   if(state.mode==='build'){
@@ -1118,10 +1276,11 @@ function renderQuestion(){
       <div class="feedback" id="fb"></div>`;
     state.lastPlayedItem = { en:item.answer, vi:item.vi };
     updateHintPanel();
-    state.captured = null;
     // ONE countdown for the entire question — arranging the chunks AND
     // speaking both happen inside it; nothing the user clicks resets it.
-    startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answer, info));
+    // (Chunk clicks are inert until the pause overlay is hidden, i.e. until
+    // Start/Resume has actually kicked this question off.)
+    state.activateFn = ()=> startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answer, info));
 
     function renderRows(){
       document.getElementById('answerRow').innerHTML = picked.map(c=>`<div class="chunk">${c}</div>`).join('') || '<span class="hidden-hint">no chunks selected yet</span>';
@@ -1167,27 +1326,28 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous item's hint until this one is actually played
-    state.captured = null;
     // ONE countdown for the entire question — conversation playback, the
     // question reveal, and speech capture all happen inside it.
-    startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answers[0], info));
-    let convOk = true;
-    speakSequential(item.lines, ()=>{
-      document.getElementById('dialogueBox').style.display='block';
-      document.getElementById('dialogueBox').innerHTML = item.lines.map(l=>{
-        const [sp, ...rest] = l.split(':');
-        return `<div class="ln"><span class="sp">${sp}:</span>${rest.join(':')}</div>`;
-      }).join('');
-      if(convOk) document.getElementById('voiceTag').textContent = '';
-      document.getElementById('qArea').style.display='flex';
-      document.getElementById('qText').textContent = item.question;
-      state.lastPlayedItem = { en:`${item.question} → ${item.answers[0]}`, vi:item.vi };
-      updateHintPanel();
-      setTimeout(()=> beginSpeakingCapture(item.answers[0], info, undefined, item.answers), 500);
-    }, status=>{
-      if(status!=='ok') convOk = false;
-      applySpeechStatus('voiceTag', status);
-    });
+    state.activateFn = ()=>{
+      startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answers[0], info));
+      let convOk = true;
+      speakSequential(item.lines, ()=>{
+        document.getElementById('dialogueBox').style.display='block';
+        document.getElementById('dialogueBox').innerHTML = item.lines.map(l=>{
+          const [sp, ...rest] = l.split(':');
+          return `<div class="ln"><span class="sp">${sp}:</span>${rest.join(':')}</div>`;
+        }).join('');
+        if(convOk) document.getElementById('voiceTag').textContent = '';
+        document.getElementById('qArea').style.display='flex';
+        document.getElementById('qText').textContent = item.question;
+        state.lastPlayedItem = { en:`${item.question} → ${item.answers[0]}`, vi:item.vi };
+        updateHintPanel();
+        setTimeout(()=> beginSpeakingCapture(item.answers[0], info, undefined, item.answers), 500);
+      }, status=>{
+        if(status!=='ok') convOk = false;
+        applySpeechStatus('voiceTag', status);
+      });
+    };
   }
 
   if(state.mode==='completion'){
@@ -1207,9 +1367,9 @@ function renderQuestion(){
     state.lastPlayedItem = { en:item.blankTpl.replace('___', item.answers[0]), vi:item.vi };
     updateHintPanel();
     document.getElementById('compInput').focus();
-    startRing(info.time, ()=> submitCompletion(item, info, null, true));
     document.getElementById('submitComp').onclick = ()=> submitCompletion(item, info, document.getElementById('compInput').value, false);
     document.getElementById('compInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submitCompletion(item, info, document.getElementById('compInput').value, false); });
+    state.activateFn = ()=> startRing(info.time, ()=> submitCompletion(item, info, null, true));
   }
 
   if(state.mode==='dictation'){
@@ -1227,35 +1387,37 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous sentence's hint until this one is actually played
-    state.captured = null;
     // ONE countdown for the entire question — playback and typing both
     // happen inside it. "Lock in answer" just records what's typed so far;
     // it does not stop the clock. Whatever's captured (or typed live) when
     // the timer hits 0 is what gets scored, then it moves on automatically.
-    startRing(info.time, ()=>{
-      const typeArea = document.getElementById('typeArea');
-      const audioNeverFinished = !typeArea || typeArea.style.display === 'none';
-      const liveInput = document.getElementById('typeInput');
-      const val = state.captured !== null ? state.captured : (liveInput ? liveInput.value : null);
-      submitDictation(item, info, audioNeverFinished, val);
-    });
-    const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
-      const typeArea = document.getElementById('typeArea');
-      if(typeArea) typeArea.style.display='flex';
-      const input = document.getElementById('typeInput');
-      if(input) input.focus();
-      const btn = document.getElementById('submitType');
-      if(btn) btn.onclick = ()=>{
-        state.captured = input ? input.value : '';
-        btn.disabled = true;
-        if(input) input.disabled = true;
-        const fb = document.getElementById('fb');
-        if(fb){ fb.textContent = 'Answer locked in — waiting for timer...'; fb.className = 'feedback'; }
-      };
-    });
-    document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
-    state.lastPlayedItem = { en:item.en, vi:item.vi };
-    updateHintPanel();
+    state.activateFn = ()=>{
+      startRing(info.time, ()=>{
+        const typeArea = document.getElementById('typeArea');
+        const audioNeverFinished = !typeArea || typeArea.style.display === 'none';
+        const liveInput = document.getElementById('typeInput');
+        const val = state.captured !== null ? state.captured : (liveInput ? liveInput.value : null);
+        submitDictation(item, info, audioNeverFinished, val);
+      });
+      const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
+        const typeArea = document.getElementById('typeArea');
+        if(typeArea) typeArea.style.display='flex';
+        const input = document.getElementById('typeInput');
+        if(input) input.focus();
+        const btn = document.getElementById('submitType');
+        if(btn) btn.onclick = ()=>{
+          state.captured = input ? input.value : '';
+          btn.disabled = true;
+          if(input) input.disabled = true;
+          const fb = document.getElementById('fb');
+          if(fb){ fb.textContent = 'Answer locked in — waiting for timer...'; fb.className = 'feedback'; }
+        };
+      });
+      const vt = document.getElementById('voiceTag');
+      if(vt) vt.textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
+      state.lastPlayedItem = { en:item.en, vi:item.vi };
+      updateHintPanel();
+    };
   }
 
   if(state.mode==='passage'){
@@ -1268,8 +1430,26 @@ function renderQuestion(){
       <div class="feedback" id="fb"></div>`;
     state.lastPlayedItem = { en:item.en, vi:item.vi, summary:item.summary, summaryVi:item.summaryVi };
     updateHintPanel();
-    startRing(info.time, ()=> startPassageWriting(item, info));
+    state.activateFn = ()=> startRing(info.time, ()=> startPassageWriting(item, info));
   }
+
+  // Pause overlay — re-created fresh on every render since card.innerHTML
+  // above just wiped out any previous one. Blocks all interaction with the
+  // card (ring, buttons, chunk clicks, typing) until the session is
+  // actually running (audio checks passed + Start pressed + not paused).
+  const overlay = document.createElement('div');
+  overlay.className = 'pause-overlay';
+  overlay.id = 'pauseOverlay';
+  overlay.innerHTML = state.running
+    ? `<div class="pause-overlay-inner">⏸ Paused<span>Tap to continue</span></div>`
+    : `<div class="pause-overlay-inner">▶ Ready<span>Complete the 3 audio checks above, then tap Start Session</span></div>`;
+  overlay.onclick = ()=> toggleSession();
+  card.appendChild(overlay);
+
+  if(state.running && !state.paused && state.activateFn){
+    state.activateFn();
+  }
+  syncPauseOverlay();
 }
 
 function updateHintPanel(){
@@ -1551,6 +1731,7 @@ document.getElementById('examTab').addEventListener('click', ()=> startExam());
 
 document.getElementById('testSoundBtn').addEventListener('click', ()=>{
   const msg = document.getElementById('soundCheckMsg');
+  document.getElementById('soundConfirm').style.display = 'flex';
   msg.textContent = '🔄 Testing sound...';
   speak('This is a test. Can you hear this sentence?', (status, detail)=>{
     if(status==='ok') msg.textContent = '✅ Sound is working on this device.';
@@ -1565,6 +1746,7 @@ document.getElementById('testSoundBtn').addEventListener('click', ()=>{
 
 document.getElementById('testMicBtn').addEventListener('click', ()=>{
   const msg = document.getElementById('micCheckMsg');
+  document.getElementById('micConfirm').style.display = 'flex';
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if(!SR){
     msg.textContent = '❌ This browser has no speech-recognition support — Repeat/Sentence Build will use the manual self-check fallback instead (you still speak aloud, then mark ✓/✗ yourself).';
@@ -1629,6 +1811,7 @@ document.getElementById('testMicBtn').addEventListener('click', ()=>{
 // "signal arrives fine but the online recognizer fails" (network issue).
 document.getElementById('micLevelBtn').addEventListener('click', ()=>{
   const msg = document.getElementById('micLevelMsg');
+  document.getElementById('levelConfirm').style.display = 'flex';
   const fill = document.getElementById('micLevelFill');
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     msg.textContent = '❌ This browser cannot access a microphone here.';
@@ -1675,8 +1858,33 @@ document.getElementById('micLevelBtn').addEventListener('click', ()=>{
   });
 });
 
+// Each audio check needs an explicit self-confirmed ✓ Đạt / ✗ Chưa đạt —
+// running the test once isn't enough on its own. Đạt on all 3 is what
+// unlocks the Start Session button (see syncSessionControls/toggleSession).
+function wireCheckConfirm(okId, badId, key){
+  const okBtn = document.getElementById(okId);
+  const badBtn = document.getElementById(badId);
+  if(!okBtn || !badBtn) return;
+  okBtn.addEventListener('click', ()=>{
+    state.checklist[key] = true;
+    okBtn.classList.add('selected'); badBtn.classList.remove('selected');
+    syncSessionControls();
+  });
+  badBtn.addEventListener('click', ()=>{
+    state.checklist[key] = false;
+    badBtn.classList.add('selected'); okBtn.classList.remove('selected');
+    syncSessionControls();
+  });
+}
+wireCheckConfirm('soundOk', 'soundBad', 'sound');
+wireCheckConfirm('micOk', 'micBad', 'mic');
+wireCheckConfirm('levelOk', 'levelBad', 'level');
+
+document.getElementById('sessionToggleBtn').addEventListener('click', toggleSession);
+
 function initApp(){
   renderSkillsBar();
+  syncSessionControls();
   switchMode('repeat');
 }
 
