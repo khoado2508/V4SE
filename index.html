@@ -108,7 +108,10 @@
   .ring-bg{fill:none;stroke:#E2E6F0;stroke-width:8;}
   .ring-fg{fill:none;stroke:var(--primary);stroke-width:8;stroke-linecap:round;stroke-dasharray:327;stroke-dashoffset:0;transition:stroke-dashoffset linear;}
   .ring-fg.danger{stroke:var(--bad);}
+  .ring-fg.indefinite{animation:ringPulse 1.6s ease-in-out infinite;}
+  @keyframes ringPulse{0%,100%{opacity:1;}50%{opacity:.4;}}
   .ring-time{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:'Inter',system-ui,sans-serif;font-size:26px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
+  .ring-time.indefinite{font-size:22px;}
 
   .mode-label{font-family:'Inter',system-ui,sans-serif;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);}
 
@@ -1000,11 +1003,14 @@ function startRing(seconds, onExpire){
   clearInterval(state.ringTimer); state.ringTimer=null;
   const ring = document.getElementById('ringFg');
   const timeEl = document.getElementById('ringTime');
-  const CIRC = 327;
+  if(!ring || !timeEl){ console.error('[V4SE] startRing: ring elements missing, skipping'); return; }
   ring.style.transition='none';
   ring.style.strokeDashoffset='0';
   ring.classList.remove('danger');
+  ring.classList.remove('indefinite');
+  timeEl.classList.remove('indefinite');
   timeEl.textContent = seconds;
+  const CIRC = 327;
   void ring.offsetWidth;
   ring.style.transition = `stroke-dashoffset ${seconds}s linear`;
   ring.style.strokeDashoffset = CIRC;
@@ -1015,7 +1021,32 @@ function startRing(seconds, onExpire){
     if(remaining<=2) ring.classList.add('danger');
     if(remaining<=0){ clearInterval(state.ringTimer); state.ringTimer=null; }
   },1000);
-  state.timer = setTimeout(()=>{ clearInterval(state.ringTimer); state.ringTimer=null; onExpire(); }, seconds*1000);
+  // Wrapped in try/catch + logged: if onExpire ever throws (e.g. a DOM node
+  // it expects is momentarily missing), the error is visible in the console
+  // instead of silently killing the callback before it reaches nextQuestion(),
+  // which would otherwise look like the app "getting stuck" at 0.
+  state.timer = setTimeout(()=>{
+    clearInterval(state.ringTimer); state.ringTimer=null;
+    try{ onExpire(); }
+    catch(err){ console.error('[V4SE] startRing onExpire failed:', err); nextQuestion(); }
+  }, seconds*1000);
+}
+
+// Puts the ring into a calm "no time limit" state: full ring, pulsing,
+// showing ∞ instead of a number. Used for the response phase once the user
+// has pressed Play/Confirm — from that point on there's no forced timeout,
+// they answer whenever they're ready.
+function setRingIndefinite(){
+  clearTimers();
+  const ring = document.getElementById('ringFg');
+  const timeEl = document.getElementById('ringTime');
+  if(!ring || !timeEl) return;
+  ring.style.transition = 'none';
+  ring.style.strokeDashoffset = '0';
+  ring.classList.remove('danger');
+  ring.classList.add('indefinite');
+  timeEl.classList.add('indefinite');
+  timeEl.textContent = '∞';
 }
 
 function switchMode(mode){
@@ -1065,7 +1096,7 @@ function renderQuestion(){
       <div class="mode-label">Repeat · Speaking</div>
       ${ringHtml}
       <div class="prompt-area">
-        <div class="hidden-hint" id="hh">Tap "Play sentence" — then repeat it exactly within ${info.time} seconds</div>
+        <div class="hidden-hint" id="hh">Tap "Play sentence" within ${info.time}s — then repeat it (no time limit once you start)</div>
         <div class="sentence" id="sentenceReveal" style="display:none">${text}</div>
       </div>
       <div class="controls">
@@ -1078,11 +1109,12 @@ function renderQuestion(){
     // Countdown starts the moment the question appears — if the user never
     // taps Play in time, auto-skip to the next question (counts as missed).
     startRing(info.time, ()=>{
-      document.getElementById('playBtn').disabled = true;
+      const btn = document.getElementById('playBtn');
+      if(btn) btn.disabled = true;
       finishSpeaking(text, info, null, undefined, true);
     });
     document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the sentence finishes playing
+      clearTimers(); // stop the "waiting for Play" countdown; no forced timer for the answer itself
       document.getElementById('playBtn').disabled = true;
       const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
       document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
@@ -1114,7 +1146,8 @@ function renderQuestion(){
     // Countdown starts the moment the question appears — if the user never
     // finishes arranging + confirming in time, auto-skip (counts as missed).
     startRing(info.time, ()=>{
-      document.getElementById('confirmOrder').disabled = true;
+      const btn = document.getElementById('confirmOrder');
+      if(btn) btn.disabled = true;
       finishSpeaking(item.answer, info, null, undefined, true);
     });
 
@@ -1161,11 +1194,12 @@ function renderQuestion(){
     // Countdown starts the moment the question appears — if the user never
     // taps Play in time, auto-skip to the next question (counts as missed).
     startRing(info.time, ()=>{
-      document.getElementById('playBtn').disabled = true;
+      const btn = document.getElementById('playBtn');
+      if(btn) btn.disabled = true;
       finishSpeaking(item.answers[0], info, null, undefined, true, item.answers);
     });
     document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the conversation finishes playing
+      clearTimers(); // stop the "waiting for Play" countdown; no forced timer for the answer itself
       document.getElementById('playBtn').disabled = true;
       document.getElementById('voiceTag').textContent = '🔊 Playing conversation...';
       let convOk = true;
@@ -1231,16 +1265,18 @@ function renderQuestion(){
     // Countdown starts the moment the question appears — if the user never
     // taps Play in time, auto-skip to the next question (counts as missed).
     startRing(info.time, ()=>{
-      document.getElementById('playBtn').disabled = true;
+      const btn = document.getElementById('playBtn');
+      if(btn) btn.disabled = true;
       submitDictation(item, info, true);
     });
     document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown; a fresh one starts once the sentence finishes playing
+      clearTimers(); // stop the "waiting for Play" countdown
       document.getElementById('playBtn').disabled = true;
       const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
         document.getElementById('typeArea').style.display='flex';
         document.getElementById('typeInput').focus();
-        startRing(info.time, ()=> submitDictation(item, info, true));
+        // No forced timer once typing starts — type and submit whenever ready.
+        setRingIndefinite();
         document.getElementById('submitType').onclick = ()=> submitDictation(item, info, false);
       });
       document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
@@ -1283,36 +1319,48 @@ function updateHintPanel(){
 
 function submitCompletion(item, info, typed, timedOut){
   clearTimers();
-  const val = normWord(typed);
-  const correct = !timedOut && item.answers.some(a=> normWord(a)===val);
-  recordScore('reading', correct);
-  const fb = document.getElementById('fb');
-  fb.className = 'feedback ' + (correct ? 'ok':'bad');
-  fb.textContent = timedOut ? `⏱ Time's up. Answer: "${item.answers[0]}"` : (correct ? '✓ Correct!' : `✗ Incorrect. Answer: "${item.answers[0]}"`);
-  document.getElementById('submitComp') && (document.getElementById('submitComp').disabled = true);
+  try{
+    const val = normWord(typed);
+    const correct = !timedOut && item.answers.some(a=> normWord(a)===val);
+    recordScore('reading', correct);
+    const fb = document.getElementById('fb');
+    if(fb){
+      fb.className = 'feedback ' + (correct ? 'ok':'bad');
+      fb.textContent = timedOut ? `⏱ Time's up. Answer: "${item.answers[0]}"` : (correct ? '✓ Correct!' : `✗ Incorrect. Answer: "${item.answers[0]}"`);
+    }
+    const btn = document.getElementById('submitComp');
+    if(btn) btn.disabled = true;
+  }catch(err){ console.error('[V4SE] submitCompletion error:', err); }
   setTimeout(nextQuestion, 1600);
 }
 
 function submitDictation(item, info, timedOut){
   clearTimers();
-  const val = timedOut ? '' : document.getElementById('typeInput').value;
-  const acc = accuracy(item.en, val);
-  const good = acc >= 0.85;
-  recordScore('listening', good);
-  recordScore('writing', good);
-  const fb = document.getElementById('fb');
-  fb.className = 'feedback ' + (good ? 'ok':'bad');
-  fb.textContent = timedOut ? `⏱ Time's up. Correct sentence: "${item.en}"` : `${good? '✓ Pass':'✗ Not yet'} — match ${Math.round(acc*100)}% · Correct sentence: "${item.en}"`;
+  try{
+    const val = timedOut ? '' : document.getElementById('typeInput').value;
+    const acc = accuracy(item.en, val);
+    const good = acc >= 0.85;
+    recordScore('listening', good);
+    recordScore('writing', good);
+    const fb = document.getElementById('fb');
+    if(fb){
+      fb.className = 'feedback ' + (good ? 'ok':'bad');
+      fb.textContent = timedOut ? `⏱ Time's up. Correct sentence: "${item.en}"` : `${good? '✓ Pass':'✗ Not yet'} — match ${Math.round(acc*100)}% · Correct sentence: "${item.en}"`;
+    }
+  }catch(err){ console.error('[V4SE] submitDictation error:', err); }
   setTimeout(nextQuestion, 1800);
 }
 
 function beginSpeakingCapture(targetText, info, buildCorrect, acceptList){
   const fb = document.getElementById('fb');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  startRing(info.time, ()=> finishSpeaking(targetText, info, null, buildCorrect, true, acceptList));
+  // No forced timer for the answer itself — user speaks whenever ready;
+  // speech recognition's own end-of-speech detection (or the self-report
+  // buttons below, for browsers without SpeechRecognition) is what moves on.
+  setRingIndefinite();
 
   if(SR){
-    fb.textContent = '🎙 Listening... speak now';
+    fb.textContent = '🎙 Listening... no time limit — speak whenever you\'re ready';
     fb.className = 'feedback';
     ensureMicPermission(()=>{
       try{
@@ -1347,20 +1395,24 @@ function showSelfReport(targetText, info, buildCorrect, acceptList){
 function finishSpeaking(targetText, info, said, buildCorrect, timedOut, acceptList){
   clearTimers();
   releaseSharedMic();
-  let acc = 0;
-  if(said!==null){
-    if(acceptList && acceptList.length){
-      acc = Math.max(...acceptList.map(a=> accuracy(a, said)));
-    } else {
-      acc = accuracy(targetText, said);
+  try{
+    let acc = 0;
+    if(said!==null){
+      if(acceptList && acceptList.length){
+        acc = Math.max(...acceptList.map(a=> accuracy(a, said)));
+      } else {
+        acc = accuracy(targetText, said);
+      }
     }
-  }
-  let good = acc >= 0.6;
-  if(buildCorrect === false) good = false;
-  recordScore(info.skill, good && !timedOut);
-  const fb = document.getElementById('fb');
-  fb.className = 'feedback ' + (good && !timedOut ? 'ok':'bad');
-  fb.textContent = timedOut ? '⏱ Time\'s up.' : (said ? `You said: "${said}" — match ${Math.round(acc*100)}%` : '✗ Not recognized / incorrect.');
+    let good = acc >= 0.6;
+    if(buildCorrect === false) good = false;
+    recordScore(info.skill, good && !timedOut);
+    const fb = document.getElementById('fb');
+    if(fb){
+      fb.className = 'feedback ' + (good && !timedOut ? 'ok':'bad');
+      fb.textContent = timedOut ? '⏱ Time\'s up.' : (said ? `You said: "${said}" — match ${Math.round(acc*100)}%` : '✗ Not recognized / incorrect.');
+    }
+  }catch(err){ console.error('[V4SE] finishSpeaking error:', err); }
   setTimeout(nextQuestion, 3000);
 }
 
