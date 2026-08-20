@@ -1032,22 +1032,6 @@ function startRing(seconds, onExpire){
   }, seconds*1000);
 }
 
-// Puts the ring into a calm "no time limit" state: full ring, pulsing,
-// showing ∞ instead of a number. Used for the response phase once the user
-// has pressed Play/Confirm — from that point on there's no forced timeout,
-// they answer whenever they're ready.
-function setRingIndefinite(){
-  clearTimers();
-  const ring = document.getElementById('ringFg');
-  const timeEl = document.getElementById('ringTime');
-  if(!ring || !timeEl) return;
-  ring.style.transition = 'none';
-  ring.style.strokeDashoffset = '0';
-  ring.classList.remove('danger');
-  ring.classList.add('indefinite');
-  timeEl.classList.add('indefinite');
-  timeEl.textContent = '∞';
-}
 
 function switchMode(mode){
   if(state.examActive){
@@ -1096,80 +1080,75 @@ function renderQuestion(){
       <div class="mode-label">Repeat · Speaking</div>
       ${ringHtml}
       <div class="prompt-area">
-        <div class="hidden-hint" id="hh">Tap "Play sentence" within ${info.time}s — then repeat it (no time limit once you start)</div>
+        <div class="hidden-hint" id="hh">Plays automatically — repeat it exactly. One timer for the whole question (${info.time}s), no button needed.</div>
         <div class="sentence" id="sentenceReveal" style="display:none">${text}</div>
-      </div>
-      <div class="controls">
-        <button class="btn" id="playBtn">▶ Play sentence</button>
       </div>
       <div class="voice-tag" id="voiceTag"></div>
       <div class="hint-panel" id="hintPanel"></div>
-      <div class="feedback" id="fb"></div>`;
-    updateHintPanel(); // keep showing the previous sentence's hint until this one is actually played
-    // Countdown starts the moment the question appears — if the user never
-    // taps Play in time, auto-skip to the next question (counts as missed).
-    startRing(info.time, ()=>{
-      const btn = document.getElementById('playBtn');
-      if(btn) btn.disabled = true;
-      finishSpeaking(text, info, null, undefined, true);
-    });
-    document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown; no forced timer for the answer itself
-      document.getElementById('playBtn').disabled = true;
-      const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
-      document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
-      state.lastPlayedItem = { en:text, vi:item.vi };
-      updateHintPanel();
-    };
+      <div class="feedback" id="fb">🔊 Playing...</div>`;
+    state.lastPlayedItem = { en:text, vi:item.vi };
+    updateHintPanel();
+    state.captured = null;
+    // ONE countdown for the entire question, started the instant it appears.
+    // Nothing the user does clears or restarts it — audio playback and
+    // speech capture both happen inside this same window, and whatever was
+    // heard (or wasn't) by the time it hits 0 is what gets scored.
+    startRing(info.time, ()=> finalizeSpeakingOnExpiry(text, info));
+    const v = speak(text, status=> applySpeechStatus('voiceTag', status), ()=> beginSpeakingCapture(text, info));
+    document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
   }
 
   if(state.mode==='build'){
     const shuffled = [...item.chunks].sort(()=>Math.random()-0.5);
     let picked = [];
+    let capturePhaseStarted = false;
     card.innerHTML = `
       <div class="mode-label">Sentence Build · Speaking</div>
       ${ringHtml}
       <div class="prompt-area">
-        <div class="hidden-hint">Arrange the word groups in the correct order, then say the full sentence aloud</div>
+        <div class="hidden-hint">Arrange the word groups in order, then say the full sentence — one timer for the whole question (${info.time}s)</div>
         <div class="chunk-answer" id="answerRow"></div>
         <div class="divider"></div>
         <div class="chunk-pool" id="poolRow"></div>
       </div>
       <div class="controls">
         <button class="btn secondary" id="resetChunks">↺ Reset order</button>
-        <button class="btn" id="confirmOrder" disabled>✓ Done, say this sentence</button>
       </div>
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     state.lastPlayedItem = { en:item.answer, vi:item.vi };
     updateHintPanel();
-    // Countdown starts the moment the question appears — if the user never
-    // finishes arranging + confirming in time, auto-skip (counts as missed).
-    startRing(info.time, ()=>{
-      const btn = document.getElementById('confirmOrder');
-      if(btn) btn.disabled = true;
-      finishSpeaking(item.answer, info, null, undefined, true);
-    });
+    state.captured = null;
+    // ONE countdown for the entire question — arranging the chunks AND
+    // speaking both happen inside it; nothing the user clicks resets it.
+    startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answer, info));
 
     function renderRows(){
       document.getElementById('answerRow').innerHTML = picked.map(c=>`<div class="chunk">${c}</div>`).join('') || '<span class="hidden-hint">no chunks selected yet</span>';
       const remaining = shuffled.filter(c=>!picked.includes(c));
       document.getElementById('poolRow').innerHTML = remaining.map(c=>`<div class="chunk" data-c="${c}">${c}</div>`).join('');
       document.querySelectorAll('#poolRow .chunk').forEach(el=>{
-        el.onclick = ()=>{ picked.push(el.dataset.c); renderRows();
-          document.getElementById('confirmOrder').disabled = picked.length!==item.chunks.length; };
+        el.onclick = ()=>{
+          if(capturePhaseStarted) return; // arrangement locks in once speaking capture begins
+          picked.push(el.dataset.c); renderRows();
+          if(picked.length === item.chunks.length){
+            capturePhaseStarted = true;
+            const correctOrder = picked.join(' ') === item.chunks.join(' ');
+            const fb = document.getElementById('fb');
+            if(fb){
+              fb.textContent = correctOrder ? '✓ Correct order! Now say it aloud...' : `✗ Wrong order. Correct sentence: "${item.answer}" — say it aloud anyway to keep practicing.`;
+              fb.className = 'feedback ' + (correctOrder ? 'ok':'bad');
+            }
+            // Auto-advances into speaking capture — no confirm button to press.
+            setTimeout(()=> beginSpeakingCapture(item.answer, info, correctOrder), 1200);
+          }
+        };
       });
     }
     renderRows();
-    document.getElementById('resetChunks').onclick = ()=>{ picked=[]; renderRows(); document.getElementById('confirmOrder').disabled=true; };
-    document.getElementById('confirmOrder').onclick = ()=>{
-      clearTimers(); // stop the "waiting to confirm" countdown; a fresh one starts once speaking capture begins
-      const correctOrder = picked.join(' ') === item.chunks.join(' ');
-      document.getElementById('confirmOrder').disabled = true;
-      const fb = document.getElementById('fb');
-      fb.textContent = correctOrder ? '✓ Correct order! Now say it aloud...' : `✗ Wrong order. Correct sentence: "${item.answer}" — say it aloud anyway to keep practicing.`;
-      fb.className = 'feedback ' + (correctOrder ? 'ok':'bad');
-      setTimeout(()=> beginSpeakingCapture(item.answer, info, correctOrder), 1200);
+    document.getElementById('resetChunks').onclick = ()=>{
+      if(capturePhaseStarted) return;
+      picked=[]; renderRows();
     };
   }
 
@@ -1178,12 +1157,9 @@ function renderQuestion(){
       <div class="mode-label">Conversations · Listening</div>
       ${ringHtml}
       <div class="prompt-area">
-        <div class="hidden-hint" id="hh">Tap "Play conversation" — the question will appear once it ends, answer briefly</div>
+        <div class="hidden-hint" id="hh">Plays automatically — the question appears once it ends, answer briefly. One timer for the whole question (${info.time}s).</div>
       </div>
-      <div class="controls">
-        <button class="btn" id="playBtn">▶ Play conversation</button>
-      </div>
-      <div class="voice-tag" id="voiceTag"></div>
+      <div class="voice-tag" id="voiceTag">🔊 Playing conversation...</div>
       <div class="dialogue" id="dialogueBox" style="display:none"></div>
       <div class="prompt-area" id="qArea" style="display:none">
         <div class="sentence" id="qText"></div>
@@ -1191,35 +1167,27 @@ function renderQuestion(){
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous item's hint until this one is actually played
-    // Countdown starts the moment the question appears — if the user never
-    // taps Play in time, auto-skip to the next question (counts as missed).
-    startRing(info.time, ()=>{
-      const btn = document.getElementById('playBtn');
-      if(btn) btn.disabled = true;
-      finishSpeaking(item.answers[0], info, null, undefined, true, item.answers);
+    state.captured = null;
+    // ONE countdown for the entire question — conversation playback, the
+    // question reveal, and speech capture all happen inside it.
+    startRing(info.time, ()=> finalizeSpeakingOnExpiry(item.answers[0], info));
+    let convOk = true;
+    speakSequential(item.lines, ()=>{
+      document.getElementById('dialogueBox').style.display='block';
+      document.getElementById('dialogueBox').innerHTML = item.lines.map(l=>{
+        const [sp, ...rest] = l.split(':');
+        return `<div class="ln"><span class="sp">${sp}:</span>${rest.join(':')}</div>`;
+      }).join('');
+      if(convOk) document.getElementById('voiceTag').textContent = '';
+      document.getElementById('qArea').style.display='flex';
+      document.getElementById('qText').textContent = item.question;
+      state.lastPlayedItem = { en:`${item.question} → ${item.answers[0]}`, vi:item.vi };
+      updateHintPanel();
+      setTimeout(()=> beginSpeakingCapture(item.answers[0], info, undefined, item.answers), 500);
+    }, status=>{
+      if(status!=='ok') convOk = false;
+      applySpeechStatus('voiceTag', status);
     });
-    document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown; no forced timer for the answer itself
-      document.getElementById('playBtn').disabled = true;
-      document.getElementById('voiceTag').textContent = '🔊 Playing conversation...';
-      let convOk = true;
-      speakSequential(item.lines, ()=>{
-        document.getElementById('dialogueBox').style.display='block';
-        document.getElementById('dialogueBox').innerHTML = item.lines.map(l=>{
-          const [sp, ...rest] = l.split(':');
-          return `<div class="ln"><span class="sp">${sp}:</span>${rest.join(':')}</div>`;
-        }).join('');
-        if(convOk) document.getElementById('voiceTag').textContent = '';
-        document.getElementById('qArea').style.display='flex';
-        document.getElementById('qText').textContent = item.question;
-        state.lastPlayedItem = { en:`${item.question} → ${item.answers[0]}`, vi:item.vi };
-        updateHintPanel();
-        setTimeout(()=> beginSpeakingCapture(item.answers[0], info, undefined, item.answers), 500);
-      }, status=>{
-        if(status!=='ok') convOk = false;
-        applySpeechStatus('voiceTag', status);
-      });
-    };
   }
 
   if(state.mode==='completion'){
@@ -1249,40 +1217,45 @@ function renderQuestion(){
       <div class="mode-label">Dictation · Listening + Writing</div>
       ${ringHtml}
       <div class="prompt-area">
-        <div class="hidden-hint" id="hh">Listen once, then type exactly what you hear</div>
+        <div class="hidden-hint" id="hh">Plays automatically — type exactly what you hear. One timer for the whole question (${info.time}s).</div>
       </div>
-      <div class="controls">
-        <button class="btn" id="playBtn">▶ Play (once)</button>
-      </div>
-      <div class="voice-tag" id="voiceTag"></div>
+      <div class="voice-tag" id="voiceTag">🔊 Playing...</div>
       <div class="prompt-area" id="typeArea" style="display:none">
         <input type="text" id="typeInput" placeholder="Type what you just heard..." autocomplete="off">
-        <div class="controls"><button class="btn" id="submitType">Submit answer</button></div>
+        <div class="controls"><button class="btn" id="submitType">Lock in answer</button></div>
       </div>
       <div class="hint-panel" id="hintPanel"></div>
       <div class="feedback" id="fb"></div>`;
     updateHintPanel(); // keep showing the previous sentence's hint until this one is actually played
-    // Countdown starts the moment the question appears — if the user never
-    // taps Play in time, auto-skip to the next question (counts as missed).
+    state.captured = null;
+    // ONE countdown for the entire question — playback and typing both
+    // happen inside it. "Lock in answer" just records what's typed so far;
+    // it does not stop the clock. Whatever's captured (or typed live) when
+    // the timer hits 0 is what gets scored, then it moves on automatically.
     startRing(info.time, ()=>{
-      const btn = document.getElementById('playBtn');
-      if(btn) btn.disabled = true;
-      submitDictation(item, info, true);
+      const typeArea = document.getElementById('typeArea');
+      const audioNeverFinished = !typeArea || typeArea.style.display === 'none';
+      const liveInput = document.getElementById('typeInput');
+      const val = state.captured !== null ? state.captured : (liveInput ? liveInput.value : null);
+      submitDictation(item, info, audioNeverFinished, val);
     });
-    document.getElementById('playBtn').onclick = ()=>{
-      clearTimers(); // stop the "waiting for Play" countdown
-      document.getElementById('playBtn').disabled = true;
-      const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
-        document.getElementById('typeArea').style.display='flex';
-        document.getElementById('typeInput').focus();
-        // No forced timer once typing starts — type and submit whenever ready.
-        setRingIndefinite();
-        document.getElementById('submitType').onclick = ()=> submitDictation(item, info, false);
-      });
-      document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
-      state.lastPlayedItem = { en:item.en, vi:item.vi };
-      updateHintPanel();
-    };
+    const v = speak(item.en, status=> applySpeechStatus('voiceTag', status), ()=>{
+      const typeArea = document.getElementById('typeArea');
+      if(typeArea) typeArea.style.display='flex';
+      const input = document.getElementById('typeInput');
+      if(input) input.focus();
+      const btn = document.getElementById('submitType');
+      if(btn) btn.onclick = ()=>{
+        state.captured = input ? input.value : '';
+        btn.disabled = true;
+        if(input) input.disabled = true;
+        const fb = document.getElementById('fb');
+        if(fb){ fb.textContent = 'Answer locked in — waiting for timer...'; fb.className = 'feedback'; }
+      };
+    });
+    document.getElementById('voiceTag').textContent = v ? `🔊 ${v.lang} — ${v.name}` : '🔊 default browser voice';
+    state.lastPlayedItem = { en:item.en, vi:item.vi };
+    updateHintPanel();
   }
 
   if(state.mode==='passage'){
@@ -1334,10 +1307,11 @@ function submitCompletion(item, info, typed, timedOut){
   setTimeout(nextQuestion, 1600);
 }
 
-function submitDictation(item, info, timedOut){
+function submitDictation(item, info, timedOut, typedValue){
   clearTimers();
   try{
-    const val = timedOut ? '' : document.getElementById('typeInput').value;
+    const fallback = document.getElementById('typeInput');
+    const val = timedOut ? '' : (typedValue != null ? typedValue : (fallback ? fallback.value : ''));
     const acc = accuracy(item.en, val);
     const good = acc >= 0.85;
     recordScore('listening', good);
@@ -1351,17 +1325,16 @@ function submitDictation(item, info, timedOut){
   setTimeout(nextQuestion, 1800);
 }
 
+// Records whatever is heard/self-reported into state.captured for the
+// question's single countdown (started back in renderQuestion) to pick up
+// when it expires. Does NOT touch the timer and does NOT advance the
+// question itself — only that one countdown does that, per question.
 function beginSpeakingCapture(targetText, info, buildCorrect, acceptList){
   const fb = document.getElementById('fb');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  // No forced timer for the answer itself — user speaks whenever ready;
-  // speech recognition's own end-of-speech detection (or the self-report
-  // buttons below, for browsers without SpeechRecognition) is what moves on.
-  setRingIndefinite();
 
   if(SR){
-    fb.textContent = '🎙 Listening... no time limit — speak whenever you\'re ready';
-    fb.className = 'feedback';
+    if(fb){ fb.textContent = '🎙 Listening...'; fb.className = 'feedback'; }
     ensureMicPermission(()=>{
       try{
         const rec = new SR();
@@ -1369,7 +1342,9 @@ function beginSpeakingCapture(targetText, info, buildCorrect, acceptList){
         rec.lang='en-US'; rec.interimResults=false; rec.maxAlternatives=1;
         rec.onresult = (e)=>{
           const said = e.results[0][0].transcript;
-          finishSpeaking(targetText, info, said, buildCorrect, false, acceptList);
+          state.captured = { said, buildCorrect, acceptList };
+          releaseSharedMic();
+          if(fb){ fb.textContent = `Heard: "${said}" — locked in, waiting for timer...`; fb.className = 'feedback'; }
         };
         rec.onerror = ()=> showSelfReport(targetText, info, buildCorrect, acceptList);
         rec.onend = ()=> releaseSharedMic();
@@ -1383,13 +1358,26 @@ function beginSpeakingCapture(targetText, info, buildCorrect, acceptList){
 
 function showSelfReport(targetText, info, buildCorrect, acceptList){
   const fb = document.getElementById('fb');
+  if(!fb) return;
   fb.innerHTML = `Your browser doesn't support speech recognition — say the sentence aloud, then self-check:<br>
     <div class="controls" style="margin-top:8px">
       <button class="btn" id="selfOk">✓ I said it correctly</button>
       <button class="btn secondary" id="selfBad">✗ I said it wrong</button>
     </div>`;
-  document.getElementById('selfOk').onclick = ()=> finishSpeaking(targetText, info, targetText, buildCorrect, false, acceptList);
-  document.getElementById('selfBad').onclick = ()=> finishSpeaking(targetText, info, '', buildCorrect, false, acceptList);
+  const lock = (said)=>{
+    state.captured = { said, buildCorrect, acceptList };
+    fb.innerHTML = said ? '✓ Marked correct — waiting for timer...' : '✗ Marked wrong — waiting for timer...';
+  };
+  document.getElementById('selfOk').onclick = ()=> lock(targetText);
+  document.getElementById('selfBad').onclick = ()=> lock('');
+}
+
+// Called only from a question's single countdown when it hits 0. Reads
+// whatever beginSpeakingCapture/showSelfReport recorded (or null if the
+// user never got a result in time) and finalizes scoring + advances.
+function finalizeSpeakingOnExpiry(targetText, info){
+  const c = state.captured;
+  finishSpeaking(targetText, info, c ? c.said : null, c ? c.buildCorrect : undefined, !c, c ? c.acceptList : undefined);
 }
 
 function finishSpeaking(targetText, info, said, buildCorrect, timedOut, acceptList){
